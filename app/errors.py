@@ -70,12 +70,15 @@ class DomainError(Exception):
         cause: BaseException | None = None,
         reason: str = "explicit domain error",
         auto_wrapped: bool = False,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message or self.category.value)
         self.message = message
         self.reason = reason
         # True 表示由归因层自动包装（包装节点本身无独立语义，链路展示时可折叠）
         self.auto_wrapped = auto_wrapped
+        # 结构化的附加说明（如重试逐次结论），只允许安全字段，不含异常原文
+        self.details = details
         if cause is not None:
             self.__cause__ = cause
 
@@ -112,6 +115,7 @@ class FailureView:
     cause_type: str | None = None
     cause_summary: str | None = None
     chain: list[dict[str, Any]] = field(default_factory=list)
+    details: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +127,7 @@ class FailureView:
             "cause_type": self.cause_type,
             "cause_summary": self.cause_summary,
             "chain": self.chain,
+            "details": self.details,
         }
 
 
@@ -214,4 +219,5 @@ def to_failure_view(exc: BaseException, request_id: str | None = None) -> Failur
         cause_type=type(root_cause).__name__,
         cause_summary=_safe_summary(root_cause),
         chain=chain,
+        details=getattr(classified, "details", None),
     )

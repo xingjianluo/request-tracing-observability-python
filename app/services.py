@@ -20,6 +20,7 @@ from typing import Any
 from app.context import current_request_id
 from app.errors import DependencyDownError
 from app.events import recorder
+from app.threads import current_thread_name, run_in_thread
 
 VALID_FLAGS = {"ok", "down", "timeout", "bad", "boom"}
 
@@ -69,6 +70,20 @@ async def call_internal_dependency_async(flag: str = "ok") -> str:
         raise
     recorder.record("dependency.call.success", mode="async", flag=flag)
     return result
+
+
+async def call_internal_dependency_in_thread(flag: str = "ok") -> dict[str, Any]:
+    """把同步内部调用派生到共享线程池执行，验证跨线程的标识延续。
+
+    派生时刻的 request_id 由 threads.run_in_thread 在 worker 内重绑定，
+    因此 worker 线程里产生的事件与派生它的请求标识一致。
+    """
+    rid = current_request_id()
+    recorder.record("thread.call.start", flag=flag, request_id=rid,
+                    caller_thread=current_thread_name())
+    output = await run_in_thread(call_internal_dependency, flag)
+    recorder.record("thread.call.done", flag=flag, request_id=rid)
+    return {"output": output, "worker_events_inherit": rid}
 
 
 def _do_call(flag: str) -> str:
