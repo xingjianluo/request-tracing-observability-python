@@ -12,6 +12,7 @@ from app.context import bind_request_id, new_request_id, reset_request_id
 from app.errors import ErrorCategory, to_failure_view
 from app.events import recorder
 from app.metrics import NO_ERROR, RESULT_FAILED, RESULT_OK, registry
+from app.retries import RetryExhaustedError, retry_failure_view
 
 #: 优先采用的入站关联标识请求头/响应头
 REQUEST_ID_HEADER = b"x-request-id"
@@ -45,7 +46,50 @@ def _category_from_status(status_code: int) -> str:
 
 
 #: 可观测性端点自身不计入业务指标，避免查询/重置改变被观测结论
-_EXCLUDED_PATHS = frozenset({"/metrics", "/metrics/reset"})
+_EXCLUDED_PATHS = frozenset({"/metrics", "/metrics/reset", "/observability/retention"})
+
+
+class _ErrorView:
+    """统一的失败视图访问层：把 to_failure_view 的 FailureView 与重试安全
+    视图（dict）归一为属性访问，中间件其余代码无需区分来源。"""
+
+    def __init__(self, data: dict) -> None:
+        self._data = data
+
+    @property
+    def http_status(self) -> int:
+        return self._data["http_status"]  # type: ignore[no-any-return]
+
+    @property
+    def category(self) -> str:
+        return self._data["category"]  # type: ignore[no-any-return]
+
+    @property
+    def reason(self) -> str:
+        return self._data["reason"]  # type: ignore[no-any-return]
+
+    @property
+    def request_id(self) -> str | None:
+        return self._data["request_id"]  # type: ignore[no-any-return]
+
+    @property
+    def cause_type(self) -> str | None:
+        return self._data.get("cause_type")
+
+    @property
+    def chain(self) -> list:
+        return self._data.get("chain", [])
+
+    def to_dict(self) -> dict:
+        return self._data
+
+
+def _build_error_view(exc: Exception, request_id: str) -> _ErrorView:
+    """构造对外失败视图：重试耗尽走安全重试视图（无任何底层异常原文），
+    其余异常沿用统一归因视图。"""
+    if isinstance(exc, RetryExhaustedError):
+        return _ErrorView(retry_failure_view(exc, request_id))
+    return _ErrorView(to_failure_view(exc, request_id).to_dict())
 
 
 def _route_label(scope: Scope) -> str:
@@ -105,10 +149,25 @@ class ObservabilityMiddleware:
 
         try:
             await self.app(scope, receive, send_wrapper)
-        except Exception as exc:  # noqa: BLE001 - 边界层必须兜底归一化
+        except Exception as exc:
             route_label = _route_label(scope)
-            view = to_failure_view(exc, request_id)
+            view = _build_error_view(exc, request_id)
             elapsed_ms = round((time.perf_counter() - started_at) * 1000, 3)
+            decision_basis = {
+                "input": {"path": route_label, "query": query},
+                "classified_as": view.category,
+                "reason": view.reason,
+                "root_cause_type": view.cause_type,
+            }
+            error_payload = view.to_dict()
+            if "attempts" in error_payload:
+                # 重试场景：补入逐次尝试与最终判定依据，可解释“怎么判定/试了几次”
+                decision_basis["retry"] = {
+                    "attempts": error_payload["attempts"],
+                    "attempts_count": error_payload["attempts_count"],
+                    "final_category_source": error_payload["final_category_source"],
+                    "final_category_attempt": error_payload["final_category_attempt"],
+                }
             recorder.record(
                 "request.failure",
                 level="error",
@@ -118,13 +177,9 @@ class ObservabilityMiddleware:
                 reason=view.reason,
                 cause_type=view.cause_type,
                 chain=view.chain,
+                attempts=error_payload.get("attempts"),
                 elapsed_ms=elapsed_ms,
-                decision_basis={
-                    "input": {"path": route_label, "query": query},
-                    "classified_as": view.category,
-                    "reason": view.reason,
-                    "root_cause_type": view.cause_type,
-                },
+                decision_basis=decision_basis,
             )
             if not metrics_excluded:
                 registry.record(route_label, RESULT_FAILED, view.category)

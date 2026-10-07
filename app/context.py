@@ -10,9 +10,10 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 #: 当前请求的关联标识；未在请求上下文内时为 None。
 request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)

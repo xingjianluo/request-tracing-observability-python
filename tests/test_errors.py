@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from app.errors import (
     ClientError,
     DependencyDownError,
@@ -36,7 +34,7 @@ def test_explicit_domain_errors_pass_through():
 
 def test_timeout_classification():
     print("\n[输入] TimeoutError / asyncio.TimeoutError；[判定依据] 类型匹配 timeout -> 504")
-    for raw in (TimeoutError("deadline"), asyncio.TimeoutError()):
+    for raw in (TimeoutError("deadline"), TimeoutError()):
         classified = classify(raw)
         assert isinstance(classified, TimeoutError_)
         assert classified.__cause__ is raw

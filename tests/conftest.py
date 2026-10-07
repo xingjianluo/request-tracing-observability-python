@@ -28,6 +28,8 @@ def _isolate_global_state(monkeypatch):
     monkeypatch.setattr(events_mod, "recorder", fresh_recorder)
     monkeypatch.setattr("app.middleware.recorder", fresh_recorder)
     monkeypatch.setattr("app.services.recorder", fresh_recorder)
+    monkeypatch.setattr("app.retries.recorder", fresh_recorder)
+    monkeypatch.setattr("app.routes.recorder", fresh_recorder)
     yield fresh_registry, fresh_recorder
 
 
